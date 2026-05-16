@@ -1,0 +1,39 @@
+# Model weights (too large for git)
+*.pth
+*.pt
+*.onnx
+
+# Dataset (1.5GB+)
+RESIDE-6K/
+data/
+reside_data.zip
+
+# Outputs (generated, not tracked)
+outputs/
+dehazed_result.png
+exp_dehazed.png
+test_hazy.png
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+venv/
+.venv/
+env/
