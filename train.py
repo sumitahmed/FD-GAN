@@ -29,6 +29,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torchvision.utils import save_image
 
 from model import ModernFDGAN
 from discriminator import NLayerDiscriminator
@@ -54,7 +55,13 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--crop_size", type=int, default=256)
     p.add_argument("--lr", type=float, default=2e-4)
+    p.add_argument("--lr_g", type=float, default=None,
+                   help="Generator learning rate override")
+    p.add_argument("--lr_d", type=float, default=None,
+                   help="Discriminator learning rate override")
     p.add_argument("--num_workers", type=int, default=4)
+    p.add_argument("--amp", action="store_true",
+                   help="Use mixed precision training on CUDA")
 
     # Loss weights
     p.add_argument("--lambda_l1", type=float, default=10.0,
@@ -63,11 +70,17 @@ def parse_args():
                    help="Weight for VGG perceptual loss")
     p.add_argument("--lambda_gan", type=float, default=1.0,
                    help="Weight for adversarial loss")
+    p.add_argument("--lambda_ssim", type=float, default=0.0,
+                   help="Weight for SSIM loss (1 - SSIM)")
+    p.add_argument("--gan_start_epoch", type=int, default=0,
+                   help="Delay GAN loss/discriminator updates until this epoch")
 
     # Checkpoints
     p.add_argument("--save_dir", type=str, default="checkpoints")
     p.add_argument("--save_every", type=int, default=5,
                    help="Save checkpoint every N epochs")
+    p.add_argument("--sample_every", type=int, default=5,
+                   help="Save validation comparison images every N epochs")
     p.add_argument("--resume", type=str, default=None,
                    help="Path to checkpoint to resume from")
     p.add_argument("--pretrained_gen", type=str, default=None,
@@ -76,25 +89,35 @@ def parse_args():
     return p.parse_args()
 
 
-def save_checkpoint(path, epoch, gen, disc, opt_g, opt_d, best_loss):
+def save_checkpoint(path, epoch, gen, disc, opt_g, opt_d, best_loss, scaler=None):
     """Save training state."""
-    torch.save({
+    payload = {
         "epoch": epoch,
         "generator": gen.state_dict(),
         "discriminator": disc.state_dict(),
         "optimizer_g": opt_g.state_dict(),
         "optimizer_d": opt_d.state_dict(),
         "best_loss": best_loss,
-    }, path)
+    }
+    if scaler is not None:
+        payload["scaler"] = scaler.state_dict()
+    torch.save(payload, path)
 
 
-def load_checkpoint(path, gen, disc, opt_g, opt_d, device):
+def save_generator(path, gen):
+    """Save generator weights for inference."""
+    torch.save(gen.state_dict(), path)
+
+
+def load_checkpoint(path, gen, disc, opt_g, opt_d, scaler, device):
     """Load training state from checkpoint."""
     ckpt = torch.load(path, map_location=device, weights_only=False)
     gen.load_state_dict(ckpt["generator"])
     disc.load_state_dict(ckpt["discriminator"])
     opt_g.load_state_dict(ckpt["optimizer_g"])
     opt_d.load_state_dict(ckpt["optimizer_d"])
+    if scaler is not None and "scaler" in ckpt:
+        scaler.load_state_dict(ckpt["scaler"])
     return ckpt["epoch"], ckpt.get("best_loss", float("inf"))
 
 
