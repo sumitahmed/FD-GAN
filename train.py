@@ -63,8 +63,8 @@ def parse_args() -> argparse.Namespace:
 def save_checkpoint(path, epoch, gen, disc, opt_g, opt_d, best_psnr, scaler=None):
     payload = {
         "epoch": epoch,
-        "generator": gen.state_dict(),
-        "discriminator": disc.state_dict(),
+        "generator": unwrap_model(gen).state_dict(),
+        "discriminator": unwrap_model(disc).state_dict(),
         "optimizer_g": opt_g.state_dict(),
         "optimizer_d": opt_d.state_dict(),
         "best_psnr": best_psnr,
@@ -74,10 +74,22 @@ def save_checkpoint(path, epoch, gen, disc, opt_g, opt_d, best_psnr, scaler=None
     torch.save(payload, path)
 
 
+def unwrap_model(model):
+    return model.module if isinstance(model, nn.DataParallel) else model
+
+
+def save_generator(path, gen):
+    torch.save(unwrap_model(gen).state_dict(), path)
+
+
+def load_model_state(model, state):
+    unwrap_model(model).load_state_dict(state, strict=True)
+
+
 def load_checkpoint(path, gen, disc, opt_g, opt_d, scaler, device):
     ckpt = torch.load(path, map_location=device, weights_only=False)
-    gen.load_state_dict(ckpt["generator"])
-    disc.load_state_dict(ckpt["discriminator"])
+    load_model_state(gen, ckpt["generator"])
+    load_model_state(disc, ckpt["discriminator"])
     opt_g.load_state_dict(ckpt["optimizer_g"])
     opt_d.load_state_dict(ckpt["optimizer_d"])
     if scaler is not None and "scaler" in ckpt:
@@ -93,7 +105,7 @@ def load_generator_weights(path, gen, device):
         state = state["state_dict"]
     elif isinstance(state, dict) and "model" in state:
         state = state["model"]
-    gen.load_state_dict(state, strict=True)
+    load_model_state(gen, state)
 
 
 def denormalize(x):
@@ -279,6 +291,11 @@ def main():
 
     gen = ModernFDGAN().to(device)
     disc = NLayerDiscriminator(in_channels=6, ndf=64, n_layers=3).to(device)
+
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        print(f"Using DataParallel on {torch.cuda.device_count()} GPUs")
+        gen = nn.DataParallel(gen)
+        disc = nn.DataParallel(disc)
 
     lr_g = args.lr_g if args.lr_g is not None else args.lr
     lr_d = args.lr_d if args.lr_d is not None else args.lr
