@@ -48,7 +48,13 @@ pip install -r requirements.txt
 python infer.py --checkpoint best_gen.pth --input path/to/hazy.jpg --output dehazed.png
 ```
 
-The checkpoint file (`best_gen.pth`, ~75MB) is not included in the repository due to size. Train your own or download from the Releases page if available.
+You can also run the compatible Hugging Face checkpoint directly:
+
+```bash
+python infer.py --checkpoint hf --input path/to/hazy.jpg --output dehazed.png
+```
+
+The local checkpoint file (`best_gen.pth`, ~75MB) is not included in the repository due to size. The `--checkpoint hf` option downloads `Ramssesdlsm/FDGAN/FDGAN-generator.pth` through `huggingface_hub` and loads it through the legacy-compatible generator in `legacy_fdgan.py`.
 
 ### Training
 
