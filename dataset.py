@@ -48,15 +48,20 @@ class DehazingDataset(Dataset):
         # Supported image extensions
         exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
-        # Collect hazy images
+        # Collect hazy images recursively. Official RESIDE archives and Kaggle
+        # mirrors are not always flattened the same way.
         hazy_files = sorted([
-            f for f in self.hazy_dir.iterdir()
-            if f.suffix.lower() in exts
+            f for f in self.hazy_dir.rglob("*")
+            if f.is_file() and f.suffix.lower() in exts
         ])
 
         # Build pairs
         self.pairs = []
-        clean_files = {f.stem: f for f in self.clean_dir.iterdir() if f.suffix.lower() in exts}
+        clean_files = {
+            f.stem: f
+            for f in self.clean_dir.rglob("*")
+            if f.is_file() and f.suffix.lower() in exts
+        }
 
         for hf in hazy_files:
             # Try 1: exact filename match
@@ -93,8 +98,17 @@ class DehazingDataset(Dataset):
         if hazy.size != clean.size:
             clean = clean.resize(hazy.size, Image.LANCZOS)
 
-        # Random crop
+        # Ensure images are at least crop_size before random cropping.
         if self.crop_size is not None:
+            if hazy.width < self.crop_size or hazy.height < self.crop_size:
+                scale = self.crop_size / min(hazy.width, hazy.height)
+                new_size = (
+                    max(self.crop_size, int(round(hazy.width * scale))),
+                    max(self.crop_size, int(round(hazy.height * scale))),
+                )
+                hazy = hazy.resize(new_size, Image.BICUBIC)
+                clean = clean.resize(new_size, Image.BICUBIC)
+
             i, j, h, w = T.RandomCrop.get_params(hazy, (self.crop_size, self.crop_size))
             hazy = TF.crop(hazy, i, j, h, w)
             clean = TF.crop(clean, i, j, h, w)
