@@ -26,6 +26,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
@@ -69,6 +70,8 @@ def parse_args():
                    help="Save checkpoint every N epochs")
     p.add_argument("--resume", type=str, default=None,
                    help="Path to checkpoint to resume from")
+    p.add_argument("--pretrained_gen", type=str, default=None,
+                   help="Path to generator-only weights for warm-start training")
 
     return p.parse_args()
 
@@ -93,6 +96,20 @@ def load_checkpoint(path, gen, disc, opt_g, opt_d, device):
     opt_g.load_state_dict(ckpt["optimizer_g"])
     opt_d.load_state_dict(ckpt["optimizer_d"])
     return ckpt["epoch"], ckpt.get("best_loss", float("inf"))
+
+
+def load_generator_weights(path, gen, device):
+    """Warm-start the generator from generator-only or wrapped checkpoint weights."""
+    state = torch.load(path, map_location=device, weights_only=False)
+
+    if isinstance(state, dict) and "generator" in state:
+        state = state["generator"]
+    elif isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
+    elif isinstance(state, dict) and "model" in state:
+        state = state["model"]
+
+    gen.load_state_dict(state, strict=True)
 
 
 def train_one_epoch(gen, disc, loader, opt_g, opt_d,
@@ -177,17 +194,60 @@ def train_one_epoch(gen, disc, loader, opt_g, opt_d,
 
 @torch.no_grad()
 def validate(gen, loader, criterion_l1, device):
-    """Run validation and return average L1 loss."""
+    """Run validation and return average L1, PSNR, and SSIM."""
     gen.eval()
-    total_loss = 0.0
+    total_l1 = 0.0
+    total_psnr = 0.0
+    total_ssim = 0.0
 
     for batch in loader:
         hazy = batch["hazy"].to(device)
         clean = batch["clean"].to(device)
         fake = gen(hazy)
-        total_loss += criterion_l1(fake, clean).item()
+        total_l1 += criterion_l1(fake, clean).item()
+        total_psnr += psnr(fake, clean).item()
+        total_ssim += ssim(fake, clean).item()
 
-    return total_loss / len(loader)
+    n = len(loader)
+    return {
+        "l1": total_l1 / n,
+        "psnr": total_psnr / n,
+        "ssim": total_ssim / n,
+    }
+
+
+def psnr(pred, target, eps=1e-8):
+    """PSNR for tensors in [-1, 1]."""
+    pred = (pred + 1.0) / 2.0
+    target = (target + 1.0) / 2.0
+    mse = F.mse_loss(pred, target)
+    return 10.0 * torch.log10(1.0 / (mse + eps))
+
+
+def ssim(pred, target, window_size=11, eps=1e-8):
+    """Mean SSIM for tensors in [-1, 1], implemented without extra dependencies."""
+    pred = (pred + 1.0) / 2.0
+    target = (target + 1.0) / 2.0
+
+    c1 = 0.01 ** 2
+    c2 = 0.03 ** 2
+    padding = window_size // 2
+
+    mu_x = F.avg_pool2d(pred, window_size, stride=1, padding=padding)
+    mu_y = F.avg_pool2d(target, window_size, stride=1, padding=padding)
+
+    mu_x2 = mu_x.pow(2)
+    mu_y2 = mu_y.pow(2)
+    mu_xy = mu_x * mu_y
+
+    sigma_x = F.avg_pool2d(pred * pred, window_size, stride=1, padding=padding) - mu_x2
+    sigma_y = F.avg_pool2d(target * target, window_size, stride=1, padding=padding) - mu_y2
+    sigma_xy = F.avg_pool2d(pred * target, window_size, stride=1, padding=padding) - mu_xy
+
+    score = ((2 * mu_xy + c1) * (2 * sigma_xy + c2)) / (
+        (mu_x2 + mu_y2 + c1) * (sigma_x + sigma_y + c2) + eps
+    )
+    return score.mean()
 
 
 def main():
@@ -255,6 +315,12 @@ def main():
             args.resume, gen, disc, opt_g, opt_d, device
         )
         print(f"Resumed from epoch {start_epoch}, best_loss={best_loss:.4f}")
+    elif args.pretrained_gen:
+        if not os.path.isfile(args.pretrained_gen):
+            raise FileNotFoundError(f"Generator weights not found: {args.pretrained_gen}")
+        load_generator_weights(args.pretrained_gen, gen, device)
+        print(f"Warm-started generator from: {args.pretrained_gen}")
+        print("Discriminator and optimizers are initialized from scratch.")
 
     # ── Training Loop ───────────────────────────────────────────
     os.makedirs(args.save_dir, exist_ok=True)
@@ -287,8 +353,13 @@ def main():
         # Validation
         val_str = ""
         if val_loader:
-            val_loss = validate(gen, val_loader, criterion_l1, device)
-            val_str = f"  Val L1: {val_loss:.4f}"
+            metrics = validate(gen, val_loader, criterion_l1, device)
+            val_loss = metrics["l1"]
+            val_str = (
+                f"  Val L1: {metrics['l1']:.4f}"
+                f"  PSNR: {metrics['psnr']:.2f}dB"
+                f"  SSIM: {metrics['ssim']:.4f}"
+            )
 
             if val_loss < best_loss:
                 best_loss = val_loss
@@ -296,6 +367,7 @@ def main():
                     os.path.join(args.save_dir, "best.pth"),
                     epoch + 1, gen, disc, opt_g, opt_d, best_loss,
                 )
+                torch.save(gen.state_dict(), os.path.join(args.save_dir, "best_gen.pth"))
                 val_str += " (best!)"
 
         print(
@@ -314,6 +386,7 @@ def main():
             os.path.join(args.save_dir, "latest.pth"),
             epoch + 1, gen, disc, opt_g, opt_d, best_loss,
         )
+        torch.save(gen.state_dict(), os.path.join(args.save_dir, "latest_gen.pth"))
 
     # ── Export generator-only weights for inference ──────────────
     torch.save(gen.state_dict(), os.path.join(args.save_dir, "generator_final.pth"))
