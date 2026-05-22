@@ -37,12 +37,15 @@ class DehazingDataset(Dataset):
         self,
         hazy_dir: str,
         clean_dir: str,
-        crop_size: int = 256,
+        crop_size: int | tuple[int, int] | None = 256,
         augment: bool = True,
     ):
         self.hazy_dir = Path(hazy_dir)
         self.clean_dir = Path(clean_dir)
-        self.crop_size = crop_size
+        if isinstance(crop_size, int):
+            self.crop_size = (crop_size, crop_size)
+        else:
+            self.crop_size = crop_size
         self.augment = augment
 
         # Supported image extensions
@@ -100,16 +103,17 @@ class DehazingDataset(Dataset):
 
         # Ensure images are at least crop_size before random cropping.
         if self.crop_size is not None:
-            if hazy.width < self.crop_size or hazy.height < self.crop_size:
-                scale = self.crop_size / min(hazy.width, hazy.height)
+            crop_h, crop_w = self.crop_size
+            if hazy.width < crop_w or hazy.height < crop_h:
+                scale = max(crop_w / hazy.width, crop_h / hazy.height)
                 new_size = (
-                    max(self.crop_size, int(round(hazy.width * scale))),
-                    max(self.crop_size, int(round(hazy.height * scale))),
+                    max(crop_w, int(round(hazy.width * scale))),
+                    max(crop_h, int(round(hazy.height * scale))),
                 )
                 hazy = hazy.resize(new_size, Image.BICUBIC)
                 clean = clean.resize(new_size, Image.BICUBIC)
 
-            i, j, h, w = T.RandomCrop.get_params(hazy, (self.crop_size, self.crop_size))
+            i, j, h, w = T.RandomCrop.get_params(hazy, (crop_h, crop_w))
             hazy = TF.crop(hazy, i, j, h, w)
             clean = TF.crop(clean, i, j, h, w)
 

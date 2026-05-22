@@ -12,8 +12,6 @@ frequency fusion in differentiable PyTorch and uses a PatchGAN classifier.
 
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -142,4 +140,3 @@ class NLayerDiscriminator(FusionDiscriminator):
 
     def forward(self, hazy: torch.Tensor, image: torch.Tensor | None = None) -> torch.Tensor:
         return super().forward(hazy if image is None else image)
-

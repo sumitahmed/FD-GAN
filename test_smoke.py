@@ -27,9 +27,9 @@ for i in range(4):
 print("Created dummy dataset")
 
 # Test imports
-from model import ModernFDGAN
-from discriminator import NLayerDiscriminator
-from losses import VGGPerceptualLoss, GANLoss
+from model import FDGANGenerator
+from discriminator import FusionDiscriminator
+from losses import VGGRelu12Loss, GANLoss
 from dataset import DehazingDataset
 print("Imports OK")
 
@@ -43,8 +43,8 @@ print(f"  clean: {batch['clean'].shape}")
 
 # Test models
 device = torch.device("cpu")
-gen = ModernFDGAN().to(device)
-disc = NLayerDiscriminator(in_channels=6).to(device)
+gen = FDGANGenerator(pretrained_encoder=False).to(device)
+disc = FusionDiscriminator(fusion_mode="full", ndf=32).to(device)
 print(f"Generator:     {sum(p.numel() for p in gen.parameters()):,} params")
 print(f"Discriminator: {sum(p.numel() for p in disc.parameters()):,} params")
 
@@ -58,13 +58,13 @@ disc.train()
 fake = gen(hazy_t)
 print(f"Generator output: {fake.shape}")
 
-pred_real = disc(hazy_t, clean_t)
-pred_fake = disc(hazy_t, fake.detach())
+pred_real = disc(clean_t)
+pred_fake = disc(fake.detach())
 print(f"Discriminator output: {pred_real.shape}")
 
 # Test losses
 criterion_l1 = torch.nn.L1Loss()
-criterion_perc = VGGPerceptualLoss().to(device)
+criterion_perc = VGGRelu12Loss().to(device)
 criterion_gan = GANLoss().to(device)
 
 l1 = criterion_l1(fake, clean_t)

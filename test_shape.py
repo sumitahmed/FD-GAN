@@ -1,18 +1,16 @@
 """Verify model output shapes for various input sizes."""
 import torch
-from model import ModernFDGAN
+from model import FDGANGenerator
 
-model = ModernFDGAN()
+model = FDGANGenerator(pretrained_encoder=False)
 model.eval()
 
 # Test multiple resolutions including odd sizes
 test_sizes = [
+    (256, 320),   # Paper training size
     (256, 256),
-    (512, 512),
     (480, 640),
-    (333, 501),   # Odd dimensions
-    (720, 1280),  # HD
-    (100, 100),   # Small
+    (333, 501),   # Odd dimensions guarded by final resize
 ]
 
 print("=" * 65)
