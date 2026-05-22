@@ -101,6 +101,12 @@ class FDGANGenerator(nn.Module):
         self.conv_refin3 = nn.Conv2d(16, 3, 3, padding=1)
         self.tanh = nn.Tanh()
 
+    @staticmethod
+    def _match_size(x: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        if x.shape[-2:] == ref.shape[-2:]:
+            return x
+        return F.interpolate(x, size=ref.shape[-2:], mode="nearest")
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         input_size = x.shape[-2:]
 
@@ -108,14 +114,17 @@ class FDGANGenerator(nn.Module):
         x01 = self.conv_refin2(F.avg_pool2d(x0, 2))
 
         x1 = self.trans_block1(self.dense_block1(x0))
+        x01 = self._match_size(x01, x1)
         x10 = self.conv_refine4(torch.cat([x01, x1], dim=1))
 
         x2 = self.trans_block2(self.dense_block2(x10))
         x3 = self.trans_block3(self.dense_block3(x2))
         x22 = self.conv_refin5(F.avg_pool2d(x2, 2))
+        x22 = self._match_size(x22, x3)
 
         x4_in = self.conv_refin6(torch.cat([x3, x22], dim=1))
         x4 = self.trans_block4(self.dense_block4(x4_in))
+        x4 = self._match_size(x4, x2)
 
         x5 = self.trans_block5(self.dense_block5(torch.cat([x4, x2], dim=1)))
         x6 = self.trans_block6(self.dense_block6(x5))
@@ -124,4 +133,3 @@ class FDGANGenerator(nn.Module):
         if out.shape[-2:] != input_size:
             out = F.interpolate(out, size=input_size, mode="bilinear", align_corners=False)
         return out
-
