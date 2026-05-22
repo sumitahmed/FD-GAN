@@ -125,7 +125,3 @@ class FDGANGenerator(nn.Module):
             out = F.interpolate(out, size=input_size, mode="bilinear", align_corners=False)
         return out
 
-
-# Backward-compatible alias for older scripts in this repository.
-ModernFDGAN = FDGANGenerator
-
