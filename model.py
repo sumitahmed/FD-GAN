@@ -23,10 +23,10 @@ class ConvBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
         self.block = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False),
+            nn.Conv2d(in_ch, out_ch, 3, padding=1, padding_mode='reflect', bias=False),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1, padding_mode='reflect', bias=False),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
         )
@@ -108,7 +108,7 @@ class ModernFDGAN(nn.Module):
         # Predicts a residual correction (not the full image).
         # output = input + residual  →  untrained residual ≈ 0  →  output ≈ input
         self.head = nn.Sequential(
-            nn.Conv2d(32, 16, 3, padding=1, bias=False),
+            nn.Conv2d(32, 16, 3, padding=1, padding_mode='reflect', bias=False),
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 3, 1, bias=True),  # 1×1 conv → 3ch residual
