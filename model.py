@@ -1,15 +1,18 @@
-"""
-Modern FD-GAN Inspired Dehazing Model
+"""FD-GAN generator ported to modern PyTorch.
 
-Architecture:
-    - Encoder: DenseNet-121 backbone (pretrained on ImageNet)
-    - Decoder: U-Net style upsampling with skip connections
-    - Output:  Tanh-activated RGB image in [-1, 1]
+This module follows the generator described in "FD-GAN: Generative
+Adversarial Networks with Fusion-discriminator for Single Image Dehazing"
+and the public WeilanAnnn/FD-GAN implementation:
 
-Inspired by:
-    FD-GAN: Generative Adversarial Networks with Fusion-Discriminator
-    for Single Image Dehazing (AAAI 2020)
+* end-to-end hazy -> haze-free mapping, no explicit transmission or
+  atmospheric-light estimation;
+* DenseNet-121 dense blocks reused in the encoder;
+* dense decoder blocks with nearest-neighbor upsampling to avoid
+  checkerboard artifacts;
+* Tanh RGB output in [-1, 1].
 """
+
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
@@ -17,129 +20,112 @@ import torch.nn.functional as F
 import torchvision.models as models
 
 
-class ConvBlock(nn.Module):
-    """Double convolution block with BatchNorm and ReLU."""
+class BottleneckBlock(nn.Module):
+    """Dense decoder bottleneck used by the official FD-GAN code."""
 
-    def __init__(self, in_ch: int, out_ch: int):
+    def __init__(self, in_channels: int, growth_channels: int, drop_rate: float = 0.0):
         super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1, padding_mode='reflect', bias=False),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1, padding_mode='reflect', bias=False),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
-        )
+        inter_channels = growth_channels * 4
+        self.relu = nn.ReLU(inplace=True)
+        self.conv1 = nn.Conv2d(in_channels, inter_channels, 1, bias=False)
+        self.conv2 = nn.Conv2d(inter_channels, growth_channels, 3, padding=1, bias=False)
+        self.drop_rate = drop_rate
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.block(x)
+        out = self.conv1(self.relu(x))
+        if self.drop_rate > 0:
+            out = F.dropout(out, p=self.drop_rate, training=self.training)
+        out = self.conv2(self.relu(out))
+        if self.drop_rate > 0:
+            out = F.dropout(out, p=self.drop_rate, training=self.training)
+        return torch.cat([x, out], dim=1)
 
 
-class UpBlock(nn.Module):
-    """Upsample ×2 → optional skip-connection concat → ConvBlock."""
+class TransitionUp(nn.Module):
+    """1x1 projection followed by nearest-neighbor upsampling."""
 
-    def __init__(self, in_ch: int, skip_ch: int, out_ch: int):
+    def __init__(self, in_channels: int, out_channels: int, scale_factor: int = 2):
         super().__init__()
-        # in_ch from previous decoder stage + skip_ch from encoder
-        self.conv = ConvBlock(in_ch + skip_ch, out_ch)
-
-    def forward(self, x: torch.Tensor, skip: torch.Tensor = None) -> torch.Tensor:
-        x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
-
-        if skip is not None:
-            # Handle slight spatial mismatches from odd input sizes
-            if x.shape[2:] != skip.shape[2:]:
-                x = F.interpolate(x, size=skip.shape[2:], mode="bilinear", align_corners=False)
-            x = torch.cat([x, skip], dim=1)
-
-        return self.conv(x)
-
-
-class ModernFDGAN(nn.Module):
-    """
-    DenseNet-121 encoder → U-Net decoder with skip connections.
-
-    Encoder feature map progression (for 256×256 input):
-        stem  (conv0+bn+relu+pool) → 64ch,  64×64   (÷4)
-        enc1  (denseblock1+trans1) → 128ch, 32×32   (÷8)
-        enc2  (denseblock2+trans2) → 256ch, 16×16   (÷16)
-        enc3  (denseblock3+trans3) → 512ch,  8×8    (÷32)
-        bottleneck (denseblock4)   → 1024ch, 8×8    (÷32)
-
-    Decoder restores spatial resolution with skip connections:
-        up1: 1024 + skip(512)  → 512,  16×16
-        up2:  512 + skip(256)  → 256,  32×32
-        up3:  256 + skip(128)  → 128,  64×64
-        up4:  128 + skip(64)   →  64, 128×128
-        up5:   64 + 0          →  32, 256×256  (no skip — matches input)
-
-    Output head: 32 → 16 → 3  (Tanh activation, range [-1, 1])
-    """
-
-    def __init__(self):
-        super().__init__()
-
-        backbone = models.densenet121(weights=models.DenseNet121_Weights.DEFAULT)
-        features = backbone.features
-
-        # ── Encoder stages ──────────────────────────────────────────
-        self.stem = nn.Sequential(
-            features.conv0,   # 3  → 64,  stride=2  (÷2)
-            features.norm0,
-            features.relu0,
-            features.pool0,   # maxpool stride=2     (÷4 total)
-        )
-
-        self.enc1 = nn.Sequential(features.denseblock1, features.transition1)
-        self.enc2 = nn.Sequential(features.denseblock2, features.transition2)
-        self.enc3 = nn.Sequential(features.denseblock3, features.transition3)
-
-        self.bottleneck = nn.Sequential(features.denseblock4, features.norm5)
-
-        # ── Decoder stages (with skip connections) ──────────────────
-        #         input_ch  skip_ch  output_ch
-        self.up1 = UpBlock(1024,     512,      512)
-        self.up2 = UpBlock(512,      256,      256)
-        self.up3 = UpBlock(256,      128,      128)
-        self.up4 = UpBlock(128,       64,       64)
-        self.up5 = UpBlock(64,         0,       32)   # No skip, restores to full res
-
-        # ── Final residual projection ──────────────────────────────
-        # Predicts a residual correction (not the full image).
-        # output = input + residual  →  untrained residual ≈ 0  →  output ≈ input
-        self.head = nn.Sequential(
-            nn.Conv2d(32, 16, 3, padding=1, padding_mode='reflect', bias=False),
-            nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 3, 1, bias=True),  # 1×1 conv → 3ch residual
-        )
-
-        # Zero-init the last conv so initial residual ≈ 0
-        nn.init.zeros_(self.head[-1].weight)
-        nn.init.zeros_(self.head[-1].bias)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv = nn.ConvTranspose2d(in_channels, out_channels, 1, bias=False)
+        self.scale_factor = scale_factor
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        input_size = x.shape[2:]  # (H, W)
+        x = self.conv(self.relu(x))
+        return F.interpolate(x, scale_factor=self.scale_factor, mode="nearest")
 
-        # ── Encoder ─────────────────────────────────────────────────
-        s0 = self.stem(x)       # 64ch,  H/4  × W/4
-        s1 = self.enc1(s0)      # 128ch, H/8  × W/8
-        s2 = self.enc2(s1)      # 256ch, H/16 × W/16
-        s3 = self.enc3(s2)      # 512ch, H/32 × W/32
 
-        b = self.bottleneck(s3) # 1024ch, H/32 × W/32
+def _densenet121_features(pretrained: bool) -> nn.Module:
+    if pretrained:
+        weights = models.DenseNet121_Weights.DEFAULT
+    else:
+        weights = None
+    return models.densenet121(weights=weights).features
 
-        # ── Decoder with skip connections ───────────────────────────
-        d = self.up1(b,  s3)    # 512ch, H/16
-        d = self.up2(d,  s2)    # 256ch, H/8
-        d = self.up3(d,  s1)    # 128ch, H/4
-        d = self.up4(d,  s0)    #  64ch, H/2
-        d = self.up5(d)         #  32ch, H/1
 
-        # Guard: ensure exact spatial match with input
-        if d.shape[2:] != input_size:
-            d = F.interpolate(d, size=input_size, mode="bilinear", align_corners=False)
+class FDGANGenerator(nn.Module):
+    """Paper-aligned FD-GAN densely connected encoder-decoder.
 
-        # ── Residual learning: output = input + learned_residual ────
-        residual = self.head(d)
-        return torch.clamp(x + residual, -1.0, 1.0)
+    The public FD-GAN repo uses DenseNet-121's dense blocks as a feature
+    extractor while avoiding the initial max-pool so spatial detail is kept.
+    This port preserves that topology and supports arbitrary H/W divisible
+    by 4, with final interpolation guarding exact output size.
+    """
+
+    def __init__(self, pretrained_encoder: bool = True):
+        super().__init__()
+        features = _densenet121_features(pretrained_encoder)
+
+        self.conv_refin1 = nn.Conv2d(3, 64, 3, padding=1)
+        self.relu0 = features.relu0
+
+        self.dense_block1 = features.denseblock1
+        self.trans_block1 = features.transition1
+        self.dense_block2 = features.denseblock2
+        self.trans_block2 = features.transition2
+        self.dense_block3 = features.denseblock3
+        self.trans_block3 = features.transition3
+
+        self.conv_refin2 = nn.Conv2d(64, 32, 1)
+        self.conv_refine4 = nn.Conv2d(160, 128, 3, padding=1)
+        self.conv_refin5 = nn.Conv2d(256, 128, 1)
+        self.conv_refin6 = nn.Conv2d(640, 512, 3, padding=1)
+
+        self.dense_block4 = BottleneckBlock(512, 256)
+        self.trans_block4 = TransitionUp(768, 128)
+        self.dense_block5 = BottleneckBlock(384, 128)
+        self.trans_block5 = TransitionUp(512, 64)
+        self.dense_block6 = BottleneckBlock(64, 32)
+        self.trans_block6 = TransitionUp(96, 16)
+
+        self.conv_refin3 = nn.Conv2d(16, 3, 3, padding=1)
+        self.tanh = nn.Tanh()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        input_size = x.shape[-2:]
+
+        x0 = self.relu0(self.conv_refin1(x))
+        x01 = self.conv_refin2(F.avg_pool2d(x0, 2))
+
+        x1 = self.trans_block1(self.dense_block1(x0))
+        x10 = self.conv_refine4(torch.cat([x01, x1], dim=1))
+
+        x2 = self.trans_block2(self.dense_block2(x10))
+        x3 = self.trans_block3(self.dense_block3(x2))
+        x22 = self.conv_refin5(F.avg_pool2d(x2, 2))
+
+        x4_in = self.conv_refin6(torch.cat([x3, x22], dim=1))
+        x4 = self.trans_block4(self.dense_block4(x4_in))
+
+        x5 = self.trans_block5(self.dense_block5(torch.cat([x4, x2], dim=1)))
+        x6 = self.trans_block6(self.dense_block6(x5))
+
+        out = self.tanh(self.conv_refin3(x6))
+        if out.shape[-2:] != input_size:
+            out = F.interpolate(out, size=input_size, mode="bilinear", align_corners=False)
+        return out
+
+
+# Backward-compatible alias for older scripts in this repository.
+ModernFDGAN = FDGANGenerator
+
