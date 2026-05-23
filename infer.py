@@ -14,7 +14,7 @@ import torchvision.transforms as T
 from model import FDGANGenerator
 
 
-def load_image(path: str) -> tuple[torch.Tensor, tuple[int, int]]:
+def load_image(path: str) -> tuple[Image.Image, torch.Tensor, tuple[int, int]]:
     image = Image.open(path).convert("RGB")
     original_size = image.size
     transform = T.Compose(
@@ -23,7 +23,7 @@ def load_image(path: str) -> tuple[torch.Tensor, tuple[int, int]]:
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ]
     )
-    return transform(image).unsqueeze(0), original_size
+    return image, transform(image).unsqueeze(0), original_size
 
 
 def tensor_to_image(tensor: torch.Tensor) -> Image.Image:
@@ -57,16 +57,24 @@ def main() -> None:
     parser.add_argument("--checkpoint", required=True, help="Path to FDGAN generator checkpoint")
     parser.add_argument("--input", required=True, help="Path to hazy RGB image")
     parser.add_argument("--output", default="outputs/result.png", help="Output image path")
+    parser.add_argument("--gt", default=None, help="Path to ground truth image (optional)")
+    parser.add_argument(
+        "--triptych",
+        default=None,
+        help="Path to save hazy|dehazed|ground-truth composite (optional)",
+    )
     args = parser.parse_args()
 
     if not os.path.isfile(args.input):
         raise FileNotFoundError(args.input)
+    if args.gt and not os.path.isfile(args.gt):
+        raise FileNotFoundError(args.gt)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     model = load_generator(args.checkpoint, device)
 
-    image, original_size = load_image(args.input)
+    hazy_image, image, original_size = load_image(args.input)
     image = image.to(device)
     print(f"Input shape: {tuple(image.shape)} original={original_size}")
 
@@ -85,6 +93,32 @@ def main() -> None:
     result.save(args.output)
     print(f"Output shape: {tuple(output.shape)} time={elapsed:.3f}s")
     print(f"Saved: {args.output}")
+
+    if args.gt:
+        gt_image = Image.open(args.gt).convert("RGB")
+        target_size = result.size
+        if hazy_image.size != target_size:
+            hazy_image = hazy_image.resize(target_size, Image.Resampling.LANCZOS)
+        if gt_image.size != target_size:
+            gt_image = gt_image.resize(target_size, Image.Resampling.LANCZOS)
+
+        triptych = Image.new("RGB", (target_size[0] * 3, target_size[1]))
+        triptych.paste(hazy_image, (0, 0))
+        triptych.paste(result, (target_size[0], 0))
+        triptych.paste(gt_image, (target_size[0] * 2, 0))
+
+        triptych_path = args.triptych
+        if not triptych_path:
+            root, ext = os.path.splitext(args.output)
+            if not ext:
+                ext = ".png"
+            triptych_path = f"{root}_triptych{ext}"
+
+        triptych_dir = os.path.dirname(triptych_path)
+        if triptych_dir:
+            os.makedirs(triptych_dir, exist_ok=True)
+        triptych.save(triptych_path)
+        print(f"Saved triptych: {triptych_path}")
 
 
 if __name__ == "__main__":
