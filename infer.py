@@ -86,6 +86,24 @@ def pick_random_pair(hazy_dir: str, gt_dir: str | None) -> tuple[Path, Path | No
     return hazy_path, gt_path
 
 
+def show_result(hazy: Image.Image, dehazed: Image.Image, gt: Image.Image | None) -> None:
+    import matplotlib.pyplot as plt
+
+    images = [hazy, dehazed] if gt is None else [hazy, dehazed, gt]
+    titles = ["Hazy", "Dehazed"] if gt is None else ["Hazy", "Dehazed", "Ground Truth"]
+    cols = len(images)
+
+    fig, axes = plt.subplots(1, cols, figsize=(4 * cols, 4))
+    if cols == 1:
+        axes = [axes]
+    for ax, img, title in zip(axes, images, titles, strict=False):
+        ax.imshow(img)
+        ax.set_title(title)
+        ax.axis("off")
+    plt.tight_layout()
+    plt.show()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="FD-GAN dehazing inference")
     parser.add_argument("--checkpoint", required=True, help="Path to FDGAN generator checkpoint")
@@ -95,6 +113,8 @@ def main() -> None:
     parser.add_argument("--hazy_dir", default=None, help="Folder of hazy images (for --random)")
     parser.add_argument("--gt_dir", default=None, help="Folder of GT images (for --random)")
     parser.add_argument("--random", action="store_true", help="Pick a random hazy/GT pair")
+    parser.add_argument("--show", action="store_true", help="Display results with matplotlib")
+    parser.add_argument("--no_save", action="store_true", help="Skip saving output/triptych")
     parser.add_argument(
         "--triptych",
         default=None,
@@ -139,10 +159,15 @@ def main() -> None:
     out_dir = os.path.dirname(args.output)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    result.save(args.output)
-    print(f"Output shape: {tuple(output.shape)} time={elapsed:.3f}s")
-    print(f"Saved: {args.output}")
+    if not args.no_save:
+        result.save(args.output)
+        print(f"Output shape: {tuple(output.shape)} time={elapsed:.3f}s")
+        print(f"Saved: {args.output}")
+    else:
+        print(f"Output shape: {tuple(output.shape)} time={elapsed:.3f}s")
+        print("Skipped saving output")
 
+    gt_image = None
     if args.gt:
         gt_image = Image.open(args.gt).convert("RGB")
         target_size = result.size
@@ -151,23 +176,27 @@ def main() -> None:
         if gt_image.size != target_size:
             gt_image = gt_image.resize(target_size, Image.Resampling.LANCZOS)
 
-        triptych = Image.new("RGB", (target_size[0] * 3, target_size[1]))
-        triptych.paste(hazy_image, (0, 0))
-        triptych.paste(result, (target_size[0], 0))
-        triptych.paste(gt_image, (target_size[0] * 2, 0))
+        if not args.no_save:
+            triptych = Image.new("RGB", (target_size[0] * 3, target_size[1]))
+            triptych.paste(hazy_image, (0, 0))
+            triptych.paste(result, (target_size[0], 0))
+            triptych.paste(gt_image, (target_size[0] * 2, 0))
 
-        triptych_path = args.triptych
-        if not triptych_path:
-            root, ext = os.path.splitext(args.output)
-            if not ext:
-                ext = ".png"
-            triptych_path = f"{root}_triptych{ext}"
+            triptych_path = args.triptych
+            if not triptych_path:
+                root, ext = os.path.splitext(args.output)
+                if not ext:
+                    ext = ".png"
+                triptych_path = f"{root}_triptych{ext}"
 
-        triptych_dir = os.path.dirname(triptych_path)
-        if triptych_dir:
-            os.makedirs(triptych_dir, exist_ok=True)
-        triptych.save(triptych_path)
-        print(f"Saved triptych: {triptych_path}")
+            triptych_dir = os.path.dirname(triptych_path)
+            if triptych_dir:
+                os.makedirs(triptych_dir, exist_ok=True)
+            triptych.save(triptych_path)
+            print(f"Saved triptych: {triptych_path}")
+
+    if args.show:
+        show_result(hazy_image, result, gt_image)
 
 
 if __name__ == "__main__":
