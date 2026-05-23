@@ -245,7 +245,12 @@ def main() -> None:
 
     val_loader = None
     if args.val_hazy_dir and args.val_clean_dir:
-        val_ds = DehazingDataset(args.val_hazy_dir, args.val_clean_dir, crop_size=None, augment=False)
+        val_ds = DehazingDataset(
+    args.val_hazy_dir,
+    args.val_clean_dir,
+    crop_size=args.crop_size,
+    augment=False
+)
         val_loader = DataLoader(
             val_ds,
             batch_size=1,
